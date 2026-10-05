@@ -1,0 +1,83 @@
+# Configuration for the sandbox service. Named sandbox.yml (not application.yml) so several services can
+# share one JVM host without their settings colliding.
+spring:
+  application:
+    name: sprout-sandbox
+  datasource:
+    url: ${SANDBOX_DB_URL:jdbc:postgresql://localhost:5432/sprout?currentSchema=sandbox}
+    username: ${SANDBOX_DB_USER:sprout}
+    password: ${SANDBOX_DB_PASSWORD:sprout}
+    hikari:
+      maximum-pool-size: 5
+      pool-name: sandbox
+      connection-timeout: 2000   # fail fast when the database is gone (CHAOS-01's lesson)
+      validation-timeout: 1000
+  flyway:
+    locations: classpath:db/sandbox
+    schemas: sandbox
+    default-schema: sandbox
+  jackson:
+    default-property-inclusion: non_null   # absent, never null: the contracts say so
+    deserialization:
+      fail-on-unknown-properties: true
+  jmx:
+    enabled: false
+
+server:
+  port: ${SANDBOX_PORT:8119}
+  address: ${SANDBOX_BIND:127.0.0.1}
+  tomcat:
+    threads:
+      max: 16
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTEL_ENABLED:false}
+        url: ${OTEL_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+    tracing:
+      endpoint: ${OTEL_TRACES_URL:http://localhost:4318/v1/traces}
+      export:
+        enabled: ${OTEL_ENABLED:false}   # send traces to a collector only when one runs
+  tracing:
+    enabled: true   # always carry the trace onward (W3C traceparent), even when nothing collects it
+    sampling:
+      probability: 1.0
+  metrics:
+    tags:
+      service: sprout-sandbox
+
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:}
+  pattern:
+    correlation: "[%X{requestId:-}] "
+
+sprout:
+  sandbox:
+    every: ${SANDBOX_EVERY:5s}               # how often personas are set up a step further, and live a session
+    service-key: ${SPROUT_SERVICE_KEY:dev-only-service-key}
+    upi-pin: "2580"                          # the fictional customers' UPI PIN (only they use it)
+    email-domain: sandbox.sprout.invalid
+    payroll-key: ${BANK_PAYROLL_PARTNER_KEY:dev-only-payroll-partner-key}
+    identity-url: ${SANDBOX_IDENTITY_URL:http://127.0.0.1:8101}
+    marketdata-url: ${SANDBOX_MARKETDATA_URL:http://127.0.0.1:8103}
+    accounts-url: ${SANDBOX_ACCOUNTS_URL:http://127.0.0.1:8104}
+    payments-url: ${SANDBOX_PAYMENTS_URL:http://127.0.0.1:8105}
+    bank-url: ${SANDBOX_BANK_URL:http://127.0.0.1:8107}
+    oms-url: ${SANDBOX_OMS_URL:http://127.0.0.1:8109}
+    plans-url: ${SANDBOX_PLANS_URL:http://127.0.0.1:8115}
+    habits-url: ${SANDBOX_HABITS_URL:http://127.0.0.1:8116}
+    goals-url: ${SANDBOX_GOALS_URL:http://127.0.0.1:8117}
+    rewards-url: ${SANDBOX_REWARDS_URL:http://127.0.0.1:8118}
