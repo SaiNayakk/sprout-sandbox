@@ -14,7 +14,7 @@
   <!-- Released as git tags vX.Y.Z; hosts build a release from its tag (sprout-platform ADR-011). -->
   <groupId>com.github.SaiNayakk</groupId>
   <artifactId>sprout-sandbox</artifactId>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
   <name>sprout-sandbox</name>
   <description>The public demo: fictional customers with real history, for visitors to explore as.</description>
 

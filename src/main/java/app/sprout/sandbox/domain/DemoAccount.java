@@ -16,12 +16,12 @@ public record DemoAccount(UUID id, long number) {
     /** The plan: a modestly priced share, bought on the 5th, the day after payday. */
     static final String PLAN_SYMBOL = "KOSHA";
     static final int PLAN_AMOUNT = 6000;
-    /** The pot round-ups fill: a cheap share, so even small round-ups become whole shares and the streak grows. */
+    /** The pot round-ups fill: a modestly priced share, so round-ups soon become whole shares and the streak grows. */
     static final String POT_NAME = "Holiday fund";
     static final int POT_TARGET = 60000;
-    static final String POT_SYMBOL = "CHAIWALA";
+    static final String POT_SYMBOL = "THREADS";
     /** What the odd extra purchase is chosen from: the cheaper end of the market. */
-    static final List<String> EVERYDAY_SHARES = List.of("SUNROOT", "CHAIWALA", "THREADS", "IRONLEAF", "NIGHTOWL", "KOSHA", "GRIDLINE");
+    static final List<String> EVERYDAY_SHARES = List.of("SUNROOT", "THREADS", "IRONLEAF", "NIGHTOWL", "KOSHA", "GRIDLINE");
     static final List<String> MERCHANTS = List.of("monsoonchai@sproutbank", "tiffinbox@sproutbank", "kiranacorner@sproutbank",
             "citymetro@sproutbank", "bookworm@sproutbank", "rechargehub@sproutbank");
 
