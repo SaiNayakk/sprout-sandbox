@@ -66,9 +66,11 @@ logging:
 
 sprout:
   sandbox:
-    every: ${SANDBOX_EVERY:5s}               # how often personas are set up a step further, and live a session
+    every: ${SANDBOX_EVERY:5s}               # how often demo accounts are set up a step further, and live a session
+    warm: ${SANDBOX_WARM:3}                  # demo accounts kept ready for the next visitors
+    keep-for: ${SANDBOX_KEEP_FOR:2h}         # how long a visitor keeps theirs
     service-key: ${SPROUT_SERVICE_KEY:dev-only-service-key}
-    upi-pin: "2580"                          # the fictional customers' UPI PIN (only they use it)
+    upi-pin: "2580"                          # the demo accounts' UPI PIN (only the sandbox uses it)
     email-domain: sandbox.sprout.invalid
     payroll-key: ${BANK_PAYROLL_PARTNER_KEY:dev-only-payroll-partner-key}
     identity-url: ${SANDBOX_IDENTITY_URL:http://127.0.0.1:8101}

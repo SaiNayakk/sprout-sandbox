@@ -1,14 +1,15 @@
 package app.sprout.sandbox.domain;
 
-import app.sprout.sandbox.domain.Personas.Group;
-import app.sprout.sandbox.domain.Personas.Persona;
+import app.sprout.sandbox.config.SandboxProperties;
 import app.sprout.sandbox.domain.Upstreams.Unreachable;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.sql.Timestamp;
 import java.time.Clock;
-import java.util.List;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -16,67 +17,75 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Visitors exploring as a fictional person: given whoever in their chosen group was explored least
- * recently (and is set up), with an ordinary signed-in session as them.
+ * Visitors trying Sprout: each is given the warm demo account with the most history, nobody else's, named
+ * as they choose, with an ordinary signed-in session, until {@code keepFor} has passed.
  */
 @Service
 public class Demo {
 
     private static final Logger log = LoggerFactory.getLogger(Demo.class);
+    /** Letters (any script) and the punctuation names use; it must start with a letter. */
+    private static final Pattern NAME = Pattern.compile("^\\p{L}[\\p{L}\\p{M} .,'-]*$");
 
-    public record Started(Persona persona, JsonNode tokens) {}
+    public record Status(boolean ready, Integer sessionsLived, long endsAfterMinutes) {}
+
+    public record Started(String name, int sessionsLived, Instant endsAt, JsonNode tokens) {}
+
+    private record Available(DemoAccount account, int sessionsLived) {}
 
     private final JdbcClient db;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final Accounts accounts;
+    private final SandboxProperties props;
 
-    public Demo(JdbcClient db, TransactionTemplate tx, Clock clock, Accounts accounts) {
+    public Demo(JdbcClient db, TransactionTemplate tx, Clock clock, Accounts accounts, SandboxProperties props) {
         this.db = db;
         this.tx = tx;
         this.clock = clock;
         this.accounts = accounts;
+        this.props = props;
     }
 
-    /** {@code group} is a {@link Group} name, or ANY. */
-    public Started start(String group) {
-        List<String> ids;
-        if ("ANY".equals(group)) {
-            ids = Personas.ALL.stream().map(Persona::id).toList();
-        } else {
-            Group g;
-            try {
-                g = Group.valueOf(group == null ? "" : group);
-            } catch (IllegalArgumentException e) {
-                throw new ApiException(ErrorCode.VALIDATION_FAILED, "Choose WOMEN, MEN, NON_BINARY_AND_OTHER or ANY.");
-            }
-            ids = Personas.ALL.stream().filter(p -> p.group() == g).map(Persona::id).toList();
+    public Status status() {
+        Optional<Integer> best = db.sql("""
+                        SELECT sessions_lived FROM demo_accounts WHERE ready AND claimed_at IS NULL AND retired_at IS NULL
+                        ORDER BY sessions_lived DESC LIMIT 1""").query(Integer.class).optional();
+        return new Status(best.isPresent(), best.orElse(null), props.keepFor().toMinutes());
+    }
+
+    public Started start(String name) {
+        String clean = name == null ? "" : name.trim().replaceAll("\\s+", " ");
+        if (clean.isEmpty() || clean.length() > 40 || !NAME.matcher(clean).matches()) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "Tell us what to call you: letters, spaces and . , - ' only, up to 40 characters.");
         }
-        // two tries: if one person can't be signed in now, the next least recent can
-        for (int attempt = 0; attempt < 2; attempt++) {
+        try {
             Optional<Started> s = tx.execute(t -> {
-                Optional<String> next = db.sql("SELECT id FROM personas WHERE ready AND id IN (:ids) "
-                                + "ORDER BY last_served_at NULLS FIRST, served, id LIMIT 1 FOR UPDATE SKIP LOCKED")
-                        .param("ids", ids).query(String.class).optional();
+                Optional<Available> next = db.sql("""
+                                SELECT id, number, sessions_lived FROM demo_accounts
+                                WHERE ready AND claimed_at IS NULL AND retired_at IS NULL
+                                ORDER BY sessions_lived DESC, number LIMIT 1 FOR UPDATE SKIP LOCKED""")
+                        .query((rs, n) -> new Available(new DemoAccount(rs.getObject(1, UUID.class), rs.getLong(2)), rs.getInt(3))).optional();
                 if (next.isEmpty()) {
                     return Optional.<Started>empty();
                 }
-                Persona p = Personas.byId(next.get()).orElseThrow();
-                // marked served first: if signing in fails, the next try (and the next visitor) gets someone else
-                db.sql("UPDATE personas SET last_served_at = ?, served = served + 1 WHERE id = ?")
-                        .params(Timestamp.from(clock.instant()), p.id()).update();
-                try {
-                    return Optional.of(new Started(p, accounts.signIn(p)));
-                } catch (Unreachable e) {
-                    log.warn("Couldn't sign a visitor in as {}: {}", p.name(), e.getMessage());
-                    return Optional.<Started>empty();
-                }
+                Instant now = clock.instant();
+                Instant ends = now.plus(props.keepFor());
+                // signed in first: if that fails, the account isn't given out (the transaction rolls back)
+                JsonNode tokens = accounts.signIn(next.get().account(), clean);
+                db.sql("UPDATE demo_accounts SET claimed_at = ?, claimed_name = ?, ends_at = ? WHERE id = ?")
+                        .params(Timestamp.from(now), clean, Timestamp.from(ends), next.get().account().id()).update();
+                return Optional.of(new Started(clean, next.get().sessionsLived(), ends, tokens));
             });
             if (s.isPresent()) {
                 return s.get();
             }
+        } catch (Unreachable e) {
+            log.warn("Couldn't sign a visitor in to a demo account: {}", e.getMessage());
+            throw new ApiException(ErrorCode.UPSTREAM_UNAVAILABLE, "Sprout can't sign you in to a demo account right now. Try again in a minute.", 30,
+                    Map.of());
         }
-        throw new ApiException(ErrorCode.UPSTREAM_UNAVAILABLE, "Everyone in that group is still being set up, or busy. Try again in a minute.", 30,
-                Map.of());
+        throw new ApiException(ErrorCode.UPSTREAM_UNAVAILABLE, "No demo account is ready yet; a new one is getting set up. Try again in a few minutes.",
+                60, Map.of());
     }
 }
