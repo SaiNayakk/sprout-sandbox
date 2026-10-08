@@ -1,6 +1,5 @@
 package app.sprout.sandbox.domain;
 
-import app.sprout.sandbox.domain.Personas.Persona;
 import app.sprout.sandbox.domain.Upstreams.Reply;
 import app.sprout.sandbox.domain.Upstreams.Unreachable;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -12,12 +11,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * Who each fictional person is in the rest of Sprout, signing them in, and adding money to their Sprout
- * balance the way anyone does (a deposit approved in the bank with their PIN).
+ * Who each demo account is in the rest of Sprout, signing it in, closing it to sign-in, and adding money
+ * to its Sprout balance the way anyone does (a deposit approved in the bank with the PIN).
  *
  * <p>No password is ever stored: each sign-in sets a new long random one first (identity's demo users
- * allow that, to Sprout services only) and uses it at once. The caller holds the person's row lock, so
- * two sign-ins can't overwrite each other's password.
+ * allow that, to Sprout services only) and uses it at once.
  */
 @Component
 public class Accounts {
@@ -33,45 +31,54 @@ public class Accounts {
         this.up = up;
     }
 
-    String email(Persona p) {
-        return p.id() + "@" + up.props.emailDomain();
+    String email(DemoAccount a) {
+        return "demo-" + a.number() + "@" + up.props.emailDomain();
     }
 
-    /** Signs the person in (creating their demo user the first time) and returns identity's tokens. */
-    JsonNode signIn(Persona p) {
+    /** Signs the account in as {@code displayName} (creating its demo user the first time) and returns identity's tokens. */
+    JsonNode signIn(DemoAccount a, String displayName) {
         String password = password();
-        Reply made = up.send("POST", up.props.identityUrl() + "/internal/v1/demo-users", Map.of("email", email(p), "password", password,
-                "displayName", p.name()), Map.of("X-Service-Key", up.props.serviceKey()));
-        if (!made.ok()) {
-            throw new Unreachable("identity refused the demo user: " + made.status() + " " + made.code());
-        }
-        db.sql("UPDATE personas SET user_id = ? WHERE id = ?").params(UUID.fromString(made.body().path("id").asText()), p.id()).update();
-        Reply in = up.send("POST", up.props.identityUrl() + "/v1/sessions", Map.of("email", email(p), "password", password), Map.of());
+        demoUser(a, displayName, password);
+        Reply in = up.send("POST", up.props.identityUrl() + "/v1/sessions", Map.of("email", email(a), "password", password), Map.of());
         if (!in.ok() || !in.body().path("status").asText().equals("AUTHENTICATED")) {
-            throw new Unreachable("identity didn't sign them in: " + in.status() + " " + in.code());
+            throw new Unreachable("identity didn't sign it in: " + in.status() + " " + in.code());
         }
         return in.body().path("tokens");
     }
 
-    Optional<UUID> knownUser(Persona p) {
-        return db.sql("SELECT user_id FROM personas WHERE id = ?").param(p.id()).query(UUID.class).optional().filter(u -> u != null);
+    /** No one can sign in to it again: its password becomes one nobody knows. */
+    void close(DemoAccount a) {
+        demoUser(a, "Closed demo account", password());
     }
 
-    UUID user(Persona p) {
-        return knownUser(p).orElseThrow(() -> new Unreachable(p.name() + " has no sign-in yet"));
+    private void demoUser(DemoAccount a, String displayName, String password) {
+        Reply made = up.send("POST", up.props.identityUrl() + "/internal/v1/demo-users", Map.of("email", email(a), "password", password,
+                "displayName", displayName), Map.of("X-Service-Key", up.props.serviceKey()));
+        if (!made.ok()) {
+            throw new Unreachable("identity refused the demo user: " + made.status() + " " + made.code());
+        }
+        db.sql("UPDATE demo_accounts SET user_id = ? WHERE id = ?").params(UUID.fromString(made.body().path("id").asText()), a.id()).update();
     }
 
-    String vpa(Persona p) {
-        return db.sql("SELECT bank_vpa FROM personas WHERE id = ?").param(p.id()).query(String.class).optional().filter(v -> v != null)
-                .orElseThrow(() -> new Unreachable(p.name() + " has no bank account yet"));
+    Optional<UUID> knownUser(DemoAccount a) {
+        return db.sql("SELECT user_id FROM demo_accounts WHERE id = ?").param(a.id()).query(UUID.class).optional().filter(u -> u != null);
+    }
+
+    UUID user(DemoAccount a) {
+        return knownUser(a).orElseThrow(() -> new Unreachable("demo account " + a.number() + " has no sign-in yet"));
+    }
+
+    String vpa(DemoAccount a) {
+        return db.sql("SELECT bank_vpa FROM demo_accounts WHERE id = ?").param(a.id()).query(String.class).optional().filter(v -> v != null)
+                .orElseThrow(() -> new Unreachable("demo account " + a.number() + " has no bank account yet"));
     }
 
     /**
-     * Adds money to the person's Sprout balance: a deposit (under {@code key}, so asking again is the same
-     * deposit), approved in the bank with their PIN. True once it has arrived.
+     * Adds money to the account's Sprout balance: a deposit (under {@code key}, so asking again is the same
+     * deposit), approved in the bank with the PIN. True once it has arrived.
      */
-    boolean addMoney(Persona p, int rupees, String key) {
-        UUID user = user(p);
+    boolean addMoney(DemoAccount a, int rupees, String key) {
+        UUID user = user(a);
         Reply d = up.as(user, "POST", up.props.paymentsUrl() + "/v1/deposits", Map.of("amount", String.valueOf(rupees)), key);
         if (!d.ok()) {
             throw new Unreachable("payments refused the deposit: " + d.code());

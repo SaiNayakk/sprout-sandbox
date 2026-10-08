@@ -14,13 +14,13 @@
   <!-- Released as git tags vX.Y.Z; hosts build a release from its tag (sprout-platform ADR-011). -->
   <groupId>com.github.SaiNayakk</groupId>
   <artifactId>sprout-sandbox</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <name>sprout-sandbox</name>
   <description>The public demo: fictional customers with real history, for visitors to explore as.</description>
 
   <properties>
     <java.version>21</java.version>
-    <sprout-contracts.version>0.11.0</sprout-contracts.version>
+    <sprout-contracts.version>0.13.0</sprout-contracts.version>
   </properties>
 
   <repositories>

@@ -9,7 +9,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import app.sprout.contracts.Contracts;
 import app.sprout.sandbox.domain.Life;
-import app.sprout.sandbox.domain.Personas;
 import app.sprout.sandbox.domain.Setup;
 import com.atlassian.oai.validator.OpenApiInteractionValidator;
 import com.atlassian.oai.validator.report.LevelResolver;
@@ -20,8 +19,8 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,6 +36,10 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -49,7 +52,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * The sandbox on a real Postgres against one stand-in for the rest of Sprout, which records every call
- * so the tests can see each person set up, signed in and living their sessions, each exactly once.
+ * so the tests can see each demo account set up, given to a visitor, living its sessions and retired.
  */
 @Testcontainers
 @SpringBootTest(properties = {"spring.config.name=sandbox", "sprout.sandbox.every=1h"})   // the tests run the rounds
@@ -65,6 +68,7 @@ class SandboxApiTest {
     static final List<String> CALLS = new CopyOnWriteArrayList<>();
     static final Map<String, String> PASSWORDS = new ConcurrentHashMap<>();       // email -> current password
     static final Map<String, String> USERS = new ConcurrentHashMap<>();           // email -> user id
+    static final Map<String, String> DISPLAY_NAMES = new ConcurrentHashMap<>();   // email -> the name it goes by
     static final Map<String, List<String>> PENDING = new ConcurrentHashMap<>();   // user -> bank requests waiting
     static final Set<String> APPROVED = ConcurrentHashMap.newKeySet();            // deposit ids approved
     static final Set<String> MANDATE_ACTIVE = ConcurrentHashMap.newKeySet();      // users
@@ -86,12 +90,23 @@ class SandboxApiTest {
     }
 
     static final OpenApiInteractionValidator CONTRACT = OpenApiInteractionValidator
-            .createForInlineApiSpecification(Contracts.read(Contracts.SANDBOX_V1))
+            .createForInlineApiSpecification(Contracts.read(Contracts.SANDBOX_V3))
             .withBasePathOverride("/")
             .withLevelResolver(LevelResolver.create().withLevel("validation.request", ValidationReport.Level.IGNORE).build())
             .build();
     static final ResultMatcher MATCHES_CONTRACT = openApi().isValid(CONTRACT);
 
+    @TestConfiguration
+    static class TestClock {
+        @Bean
+        @Primary
+        MutableClock testClock() {
+            return new MutableClock(Instant.parse("2026-10-05T05:30:00Z"));
+        }
+    }
+
+    @Autowired MutableClock clock;
+    @Autowired JdbcClient db;
     @Autowired MockMvc mvc;
     @Autowired Setup setup;
     @Autowired Life life;
@@ -100,100 +115,104 @@ class SandboxApiTest {
         return CALLS.stream().filter(c -> c.startsWith(call)).count();
     }
 
-    ResultActions start(String group) throws Exception {
-        return mvc.perform(post("/v1/demo-sessions").contentType(MediaType.APPLICATION_JSON).content("{\"group\":\"" + group + "\"}"));
+    ResultActions start(String name) throws Exception {
+        return mvc.perform(post("/v3/demo-sessions").contentType(MediaType.APPLICATION_JSON).content(JSON.writeValueAsString(Map.of("name", name))));
     }
 
     @Test
     @Order(1)
-    void fifteenPeopleFiveInEachGroupAndEveryWayOfInvestingInEveryGroup() throws Exception {
-        JsonNode body = JSON.readTree(mvc.perform(get("/v1/personas")).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)
-                .andReturn().getResponse().getContentAsString());
-        assertThat(body.path("groups").findValuesAsText("code")).containsExactly("WOMEN", "MEN", "NON_BINARY_AND_OTHER", "ANY");
-        assertThat(body.path("personas")).hasSize(15);
-        for (String g : List.of("WOMEN", "MEN", "NON_BINARY_AND_OTHER")) {
-            List<JsonNode> in = new ArrayList<>();
-            body.path("personas").forEach(p -> {
-                if (p.path("group").asText().equals(g)) {
-                    in.add(p);
-                }
-            });
-            assertThat(in).as(g).hasSize(5);
-            assertThat(in.stream().map(p -> p.path("style").asText()).toList()).as(g + ": no group is given a stereotype")
-                    .containsExactlyInAnyOrder("STEADY_PLANS", "ROUND_UPS", "GOAL_SAVER", "NEW_INVESTOR", "EXPLORER");
+    void beforeAnyAccountIsReadyVisitorsAreToldToWaitAndNamesAreChecked() throws Exception {
+        mvc.perform(get("/v3/demo")).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.ready").value(false)).andExpect(jsonPath("$.endsAfterMinutes").value(120));
+        start("Asha").andExpect(status().isServiceUnavailable()).andExpect(MATCHES_CONTRACT);
+        for (String bad : List.of("", "   ", "<script>", "R2D2", "a".repeat(41))) {
+            start(bad).andExpect(status().isBadRequest()).andExpect(MATCHES_CONTRACT);
         }
-        assertThat(body.path("personas").findValuesAsText("pronouns")).contains("she/her", "he/him", "they/them", "she/they", "he/they");
     }
 
     @Test
     @Order(2)
-    void beforeAnyoneIsSetUpVisitorsAreToldToWait() throws Exception {
-        start("WOMEN").andExpect(status().isServiceUnavailable()).andExpect(MATCHES_CONTRACT);
-        start("SOMEONE").andExpect(status().isBadRequest());
+    void aFewAccountsAreKeptWarmEachSetUpThroughTheSameStepsAsACustomerOnce() {
+        for (int i = 0; i < 12; i++) {
+            setup.round();
+        }
+        assertThat(count("POST /internal/v1/demo-users")).as("three warm accounts, one demo user each").isEqualTo(3);
+        assertThat(count("POST /v1/accounts")).as("a bank account and a Sprout account each").isEqualTo(6);
+        assertThat(count("POST /v1/requests/")).as("each first deposit approved in the bank with the PIN").isEqualTo(3);
+        assertThat(count("POST /v1/mandates/")).as("AutoPay approved for round-ups").isEqualTo(3);
+        assertThat(count("POST /v1/plans")).isEqualTo(3);
+        assertThat(count("POST /v1/pots")).as("a holiday pot each").isEqualTo(3);
+        assertThat(count("PUT /v1/round-ups")).isEqualTo(3);
+        assertThat(count("POST /v1/squads ")).as("one demo squad").isEqualTo(1);
+        assertThat(count("POST /v1/squads/join")).isEqualTo(2);
+        assertThat(DISPLAY_NAMES.values()).as("nothing about a visitor is assumed before they arrive")
+                .allMatch(n -> n.startsWith("Demo Customer "));
+        long calls = CALLS.size();
+        setup.round();
+        assertThat(CALLS.size()).as("set up once, and the pool is full: nothing more to do").isEqualTo(calls);
     }
 
     @Test
     @Order(3)
-    void everyoneIsSetUpThroughTheSameStepsAsACustomerOnce() {
-        for (int i = 0; i < 14; i++) {
-            setup.round();
-        }
-        assertThat(count("POST /internal/v1/demo-users")).as("one demo user each").isEqualTo(15);
-        assertThat(count("POST /v1/accounts")).as("a bank account and a Sprout account each").isEqualTo(30);
-        assertThat(count("POST /v1/requests/")).as("each first deposit approved in the bank with the PIN").isEqualTo(15);
-        assertThat(count("POST /v1/mandates/")).as("AutoPay approved by the three round-up savers").isEqualTo(3);
-        assertThat(count("POST /v1/plans")).as("the three steady planners").isEqualTo(3);
-        assertThat(count("POST /v1/pots")).as("a pot for each round-up saver and goal saver").isEqualTo(6);
-        assertThat(count("PUT /v1/round-ups")).isEqualTo(3);
-        assertThat(count("POST /v1/squads ")).as("three mixed squads").isEqualTo(3);
-        assertThat(count("POST /v1/squads/join")).isEqualTo(12);
-        assertThat(count("POST /v1/referrals/claim")).as("each new investor entered a friend's code").isEqualTo(3);
-        long calls = CALLS.size();
-        setup.round();
-        assertThat(CALLS.size()).as("set up once: nothing more to do").isEqualTo(calls);
-    }
-
-    @Test
-    @Order(4)
-    void visitorsGetWhoeverInTheirGroupWasExploredLeastRecently() throws Exception {
-        Set<String> seen = new HashSet<>();
-        for (int i = 0; i < 5; i++) {
-            JsonNode s = JSON.readTree(start("NON_BINARY_AND_OTHER").andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT)
-                    .andReturn().getResponse().getContentAsString());
-            assertThat(s.path("persona").path("group").asText()).isEqualTo("NON_BINARY_AND_OTHER");
-            assertThat(s.path("accessToken").asText()).startsWith("token-for-");
-            seen.add(s.path("persona").path("id").asText());
-        }
-        assertThat(seen).as("all five, before anyone twice").hasSize(5);
-        JsonNode sixth = JSON.readTree(start("NON_BINARY_AND_OTHER").andReturn().getResponse().getContentAsString());
-        assertThat(seen).contains(sixth.path("persona").path("id").asText());
-        start("ANY").andExpect(status().isCreated()).andExpect(jsonPath("$.persona.group").value("WOMEN"));   // nobody explored there yet
-    }
-
-    @Test
-    @Order(5)
-    void eachSessionIsLivedOnceByEachPersonInTheirOwnWay() {
+    void eachSessionIsLivedOnceByEachAccount() {
         life.round();
         assertThat(count("POST /v1/orders")).as("the market is closed").isZero();
         MARKET.set("OPEN");
         life.round();
-        assertThat(count("POST /partner/v1/payouts")).as("everyone's paid for October").isEqualTo(15);
+        assertThat(count("POST /partner/v1/payouts")).as("each paid for October").isEqualTo(3);
         long spends = count("POST /v1/payments");
-        assertThat(spends).as("the round-up savers spent at least once each").isGreaterThanOrEqualTo(3);
-        long orders = count("POST /v1/orders");
-        assertThat(orders).as("the explorers bought something").isGreaterThanOrEqualTo(3);
+        assertThat(spends).as("each spent at least once (rounded up into the pot)").isGreaterThanOrEqualTo(3);
+        assertThat(count("POST /v1/orders")).as("the first session buys a share").isEqualTo(3);
         life.round();
         assertThat(count("POST /v1/payments")).as("a session is lived once").isEqualTo(spends);
         SESSION.set("2026-10-06");
         life.round();
-        assertThat(count("POST /v1/orders")).isGreaterThan(orders);
-        assertThat(count("POST /partner/v1/payouts")).as("paid once a month").isEqualTo(15);
+        assertThat(count("POST /partner/v1/payouts")).as("paid once a month").isEqualTo(3);
         SESSION.set("2026-11-02");
         CASH.set(1000);
         long deposits = count("POST /v1/deposits");
         life.round();
-        assertThat(count("POST /partner/v1/payouts")).as("November's pay").isEqualTo(30);
-        assertThat(count("POST /v1/deposits")).as("money added when cash ran low").isEqualTo(deposits + 15);
+        assertThat(count("POST /partner/v1/payouts")).as("November's pay").isEqualTo(6);
+        assertThat(count("POST /v1/deposits")).as("money added when cash ran low").isEqualTo(deposits + 3);
+        CASH.set(20_000);
+    }
+
+    @Test
+    @Order(4)
+    void eachVisitorGetsAnAccountOfTheirOwnWithTheMostHistoryNamedAsTheyChose() throws Exception {
+        db.sql("UPDATE demo_accounts SET sessions_lived = 40 WHERE number = (SELECT max(number) FROM demo_accounts)").update();
+        mvc.perform(get("/v3/demo")).andExpect(MATCHES_CONTRACT).andExpect(jsonPath("$.ready").value(true))
+                .andExpect(jsonPath("$.sessionsLived").value(40));
+        JsonNode first = JSON.readTree(start("  Asha   Rao ").andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT)
+                .andReturn().getResponse().getContentAsString());
+        assertThat(first.path("name").asText()).isEqualTo("Asha Rao");
+        assertThat(first.path("sessionsLived").asInt()).as("the warm account with the most history").isEqualTo(40);
+        assertThat(Instant.parse(first.path("endsAt").asText())).isEqualTo(clock.instant().plus(Duration.ofHours(2)));
+        assertThat(DISPLAY_NAMES).containsValue("Asha Rao");
+        JsonNode second = JSON.readTree(start("Zo\u00eb D'Souza").andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        assertThat(second.path("accessToken").asText()).as("someone else's account").isNotEqualTo(first.path("accessToken").asText());
+        assertThat(db.sql("SELECT count(*) FROM demo_accounts WHERE claimed_at IS NOT NULL").query(Integer.class).single()).isEqualTo(2);
+
+        setup.round();
+        assertThat(db.sql("SELECT count(*) FROM demo_accounts WHERE claimed_at IS NULL AND retired_at IS NULL").query(Integer.class).single())
+                .as("new accounts start warming in their place").isEqualTo(3);
+        long paid = count("POST /partner/v1/payouts");
+        SESSION.set("2026-12-01");
+        life.round();
+        assertThat(count("POST /partner/v1/payouts")).as("claimed accounts keep living; the new ones aren't ready yet").isEqualTo(paid + 3);
+    }
+
+    @Test
+    @Order(5)
+    void whenAVisitorsTimeIsUpTheirAccountStopsLivingAndCantBeSignedInTo() {
+        clock.advance(Duration.ofHours(2).plusSeconds(1));
+        setup.round();
+        assertThat(db.sql("SELECT count(*) FROM demo_accounts WHERE retired_at IS NOT NULL").query(Integer.class).single()).isEqualTo(2);
+        assertThat(DISPLAY_NAMES.values().stream().filter(n -> n.equals("Closed demo account")).count()).as("closed to sign-in").isEqualTo(2);
+        long paid = count("POST /partner/v1/payouts");
+        SESSION.set("2027-01-04");
+        life.round();
+        assertThat(count("POST /partner/v1/payouts")).as("only the warm account that is ready lives on").isEqualTo(paid + 1);
     }
 
     // ── the stand-in for the rest of Sprout ──────────────────────────────────
@@ -221,6 +240,7 @@ class SandboxApiTest {
                     case "POST /internal/v1/demo-users" -> {
                         String email = body.path("email").asText();
                         PASSWORDS.put(email, body.path("password").asText());
+                        DISPLAY_NAMES.put(email, body.path("displayName").asText());
                         String id = USERS.computeIfAbsent(email, e -> UUID.randomUUID().toString());
                         reply(ex, 200, Map.of("id", id, "email", email, "displayName", body.path("displayName").asText(), "totpEnabled", false,
                                 "createdAt", "2026-10-05T00:00:00Z"));

@@ -2,12 +2,8 @@ package app.sprout.sandbox.web;
 
 import app.sprout.sandbox.domain.Demo;
 import app.sprout.sandbox.domain.Demo.Started;
-import app.sprout.sandbox.domain.Personas;
-import app.sprout.sandbox.domain.Personas.Group;
-import app.sprout.sandbox.domain.Personas.Persona;
-import java.util.ArrayList;
+import app.sprout.sandbox.domain.Demo.Status;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -16,11 +12,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
-/** The sandbox API (sandbox-v1.yaml): who visitors can explore as, and starting as one of them. Public. */
+/** The sandbox API (sandbox-v3.yaml): whether a demo account is ready, and trying Sprout with one. Public. */
 @RestController
 public class SandboxController {
 
-    public record StartRequest(String group) {}
+    public record StartRequest(String name) {}
 
     private final Demo demo;
 
@@ -28,37 +24,29 @@ public class SandboxController {
         this.demo = demo;
     }
 
-    @GetMapping("/v1/personas")
-    public Map<String, Object> personas() {
-        List<Map<String, Object>> groups = new ArrayList<>();
-        for (Group g : Group.values()) {
-            groups.add(Map.of("code", g.name(), "label", Personas.label(g)));
+    @GetMapping("/v3/demo")
+    public Map<String, Object> status() {
+        Status s = demo.status();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("ready", s.ready());
+        if (s.sessionsLived() != null) {
+            m.put("sessionsLived", s.sessionsLived());
         }
-        groups.add(Map.of("code", "ANY", "label", "No preference"));
-        return Map.of("groups", groups, "personas", Personas.ALL.stream().map(SandboxController::persona).toList());
+        m.put("endsAfterMinutes", s.endsAfterMinutes());
+        return m;
     }
 
-    @PostMapping("/v1/demo-sessions")
+    @PostMapping("/v3/demo-sessions")
     public ResponseEntity<Map<String, Object>> start(@RequestBody StartRequest req) {
-        Started s = demo.start(req.group());
+        Started s = demo.start(req.name());
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("persona", persona(s.persona()));
+        m.put("name", s.name());
+        m.put("sessionsLived", s.sessionsLived());
+        m.put("endsAt", s.endsAt().toString());
         m.put("accessToken", s.tokens().path("accessToken").asText());
         m.put("tokenType", "Bearer");
         m.put("expiresIn", s.tokens().path("expiresIn").asInt());
         m.put("refreshToken", s.tokens().path("refreshToken").asText());
         return ResponseEntity.status(HttpStatus.CREATED).body(m);
-    }
-
-    static Map<String, Object> persona(Persona p) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", p.id());
-        m.put("name", p.name());
-        m.put("pronouns", p.pronouns());
-        m.put("group", p.group().name());
-        m.put("city", p.city());
-        m.put("story", p.story());
-        m.put("style", p.style().name());
-        return m;
     }
 }
