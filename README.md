@@ -1,23 +1,25 @@
 # sprout-sandbox
 
-**The public demo**: anyone can explore Sprout as one of fifteen fictional customers with months of real
+**The public demo**: anyone can try Sprout with a demo account of their own that already has a month of real
 history, without signing up. (Signing up for real works too.)
 
-- **Who to explore as.** Visitors choose: a woman, a man, someone non-binary or of another gender, or
-  no preference. Five fictional people in each group, from across India, each with their own pronouns,
-  city, story and way of investing. Every way of investing (steady plans, round-ups, saving for a goal,
-  just starting, exploring) appears once in every group, so no group is given a stereotype.
-- **A visitor gets whoever in their group was explored least recently**, with an ordinary signed-in
-  session as them. No password is ever stored: each sign-in sets a new long random one through
-  identity's demo users, under the person's row lock, and uses it at once.
-- **History is real.** The sandbox's market runs fast, and every trading session each person lives
-  their way through the same APIs as any customer: paid monthly (by a fictional payroll), money added
-  when cash runs low, UPI spends at the demo merchants rounded up and swept, pots topped up, shares
-  bought and now and then one sold. Their streaks, statements and reconciliation are as real as anyone's.
-- **Set up like a customer.** Each person is set up step by step through the real flows: a demo
-  sign-in, a bank account with a UPI PIN, a Sprout account (KYC), a first deposit approved in the bank,
-  then AutoPay and round-ups, a plan or a pot, readiness, one of three mixed squads, and a friend's
-  referral code. Every step is safe to repeat.
+- **One account per visitor, while they are there.** A visitor types a name and is signed in to a demo account
+  nobody else is using. The web app sends a heartbeat every 30 seconds; the account is closed when the
+  heartbeats stop (the tab was closed, `gone-after`, 2 minutes), when the visitor has done nothing for
+  `idle-after` (15 minutes), when they leave, or at the latest after `keep-for` (2 hours). No password is ever
+  stored: each sign-in sets a new long random one through identity's demo users and uses it at once, and the
+  heartbeat key is kept only as its SHA-256.
+- **A pool that grows with the visitors.** `warm` accounts (10) are always waiting; more start as visitors take
+  them, up to `most` open at once (50). Beyond that a visitor is told they're next in line and the web app asks
+  again.
+- **The same history for everyone.** Each account lives `history` sessions (20, about a month) of the sandbox's
+  fast market before a visitor gets it, through the same APIs as any customer: paid monthly by a fictional
+  payroll, UPI spends at the demo shops rounded up into a pot, a plan, the odd share bought or sold. What it
+  does in each session is decided by its age alone, so every account has the same history. Then it stops: the
+  visitor drives.
+- **Set up like a customer.** Each account is set up step by step through the real flows: a demo sign-in, a
+  bank account with a UPI PIN, a Sprout account (KYC), a first deposit approved in the bank, then AutoPay and
+  round-ups, a plan and a pot, readiness, and the demo squad. Every step is safe to repeat.
 
 ## Part of Sprout
 
@@ -28,8 +30,9 @@ evidence live in [sprout-platform](https://github.com/SaiNayakk/sprout-platform)
 in sprout-contracts. It runs inside the **edge** host, and only in the sandbox.
 
 `./mvnw verify` runs the tests on a real Postgres against one stand-in for the rest of Sprout, which
-records every call: everyone set up through the same steps once, visitors rotated through their group,
-and each session lived once by each person in their own way.
+records every call: every account set up through the same steps once, each session lived once, a visitor's
+account kept while they're there and closed when they go idle, close the tab or leave, and visitors told to
+wait their turn when every account is in use.
 
 ## License
 

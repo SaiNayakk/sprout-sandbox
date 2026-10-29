@@ -6,7 +6,8 @@ import org.springframework.http.HttpStatus;
 public enum ErrorCode {
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST, "Invalid request"),
     UNAUTHENTICATED(HttpStatus.UNAUTHORIZED, "Sign in first"),
-    UPSTREAM_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Temporarily unavailable");
+    UPSTREAM_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Temporarily unavailable"),
+    DEMO_SESSION_ENDED(HttpStatus.NOT_FOUND, "This demo session has ended");
 
     private final HttpStatus status;
     private final String title;
