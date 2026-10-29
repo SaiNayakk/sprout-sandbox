@@ -67,8 +67,12 @@ logging:
 sprout:
   sandbox:
     every: ${SANDBOX_EVERY:5s}               # how often demo accounts are set up a step further, and live a session
-    warm: ${SANDBOX_WARM:3}                  # demo accounts kept ready for the next visitors
-    keep-for: ${SANDBOX_KEEP_FOR:2h}         # how long a visitor keeps theirs
+    warm: ${SANDBOX_WARM:10}                 # demo accounts kept ready for the next visitors
+    most: ${SANDBOX_MOST:50}                 # open at once, given out or waiting; beyond it visitors wait their turn
+    history: ${SANDBOX_HISTORY:20}           # sessions every account lives before a visitor gets it (about a month)
+    keep-for: ${SANDBOX_KEEP_FOR:2h}         # the longest a visitor keeps theirs
+    gone-after: ${SANDBOX_GONE_AFTER:2m}     # closed this long after the last heartbeat (the tab was closed)
+    idle-after: ${SANDBOX_IDLE_AFTER:15m}    # closed after this long with nothing done
     service-key: ${SPROUT_SERVICE_KEY:dev-only-service-key}
     upi-pin: "2580"                          # the demo accounts' UPI PIN (only the sandbox uses it)
     email-domain: sandbox.sprout.invalid

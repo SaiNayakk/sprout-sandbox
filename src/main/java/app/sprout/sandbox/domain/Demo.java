@@ -3,9 +3,15 @@ package app.sprout.sandbox.domain;
 import app.sprout.sandbox.config.SandboxProperties;
 import app.sprout.sandbox.domain.Upstreams.Unreachable;
 import com.fasterxml.jackson.databind.JsonNode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,18 +24,20 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Visitors trying Sprout: each is given the warm demo account with the most history, nobody else's, named
- * as they choose, with an ordinary signed-in session, until {@code keepFor} has passed.
+ * as they choose, with an ordinary signed-in session, while they are there: their heartbeats keep it, and it is closed
+ * when they stop, when the visitor goes idle, when they leave, or at the latest after {@code keepFor}.
  */
 @Service
 public class Demo {
 
     private static final Logger log = LoggerFactory.getLogger(Demo.class);
     /** Letters (any script) and the punctuation names use; it must start with a letter. */
+    private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern NAME = Pattern.compile("^\\p{L}[\\p{L}\\p{M} .,'-]*$");
 
     public record Status(boolean ready, Integer sessionsLived, long endsAfterMinutes) {}
 
-    public record Started(String name, int sessionsLived, Instant endsAt, JsonNode tokens) {}
+    public record Started(String name, int sessionsLived, Instant endsAt, JsonNode tokens, String demoSession) {}
 
     private record Available(DemoAccount account, int sessionsLived) {}
 
@@ -73,9 +81,15 @@ public class Demo {
                 Instant ends = now.plus(props.keepFor());
                 // signed in first: if that fails, the account isn't given out (the transaction rolls back)
                 JsonNode tokens = accounts.signIn(next.get().account(), clean);
-                db.sql("UPDATE demo_accounts SET claimed_at = ?, claimed_name = ?, ends_at = ? WHERE id = ?")
-                        .params(Timestamp.from(now), clean, Timestamp.from(ends), next.get().account().id()).update();
-                return Optional.of(new Started(clean, next.get().sessionsLived(), ends, tokens));
+                byte[] raw = new byte[32];
+                RANDOM.nextBytes(raw);
+                String key = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+                db.sql("""
+                                UPDATE demo_accounts SET claimed_at = ?, claimed_name = ?, ends_at = ?, session_key_sha256 = ?, seen_at = ?, active_at = ?
+                                WHERE id = ?""")
+                        .params(Timestamp.from(now), clean, Timestamp.from(ends), sha256(key), Timestamp.from(now), Timestamp.from(now),
+                                next.get().account().id()).update();
+                return Optional.of(new Started(clean, next.get().sessionsLived(), ends, tokens, key));
             });
             if (s.isPresent()) {
                 return s.get();
@@ -85,7 +99,42 @@ public class Demo {
             throw new ApiException(ErrorCode.UPSTREAM_UNAVAILABLE, "Sprout can't sign you in to a demo account right now. Try again in a minute.", 30,
                     Map.of());
         }
-        throw new ApiException(ErrorCode.UPSTREAM_UNAVAILABLE, "No demo account is ready yet; a new one is getting set up. Try again in a few minutes.",
-                60, Map.of());
+        // every account is given out: the visitor waits their turn, and asks again when told to
+        throw new ApiException(ErrorCode.UPSTREAM_UNAVAILABLE, "Every demo account is in use right now. You're next in line: we'll try again for you shortly.",
+                20, Map.of());
+    }
+
+    /** The visitor is still here; {@code active} when they did something since the last heartbeat. */
+    public void heartbeat(String demoSession, boolean active) {
+        Timestamp now = Timestamp.from(clock.instant());
+        int n = db.sql("""
+                        UPDATE demo_accounts SET seen_at = ?, active_at = CASE WHEN ? THEN ? ELSE active_at END
+                        WHERE session_key_sha256 = ? AND retired_at IS NULL AND ends_at > ?""")
+                .params(now, active, now, sha256(checked(demoSession)), now).update();
+        if (n == 0) {
+            throw new ApiException(ErrorCode.DEMO_SESSION_ENDED, "This demo session has ended. Start a new one to keep exploring.");
+        }
+    }
+
+    /** The visitor left: their account is closed on the next round. Safe to repeat. */
+    public void leave(String demoSession) {
+        Timestamp now = Timestamp.from(clock.instant());
+        db.sql("UPDATE demo_accounts SET ends_at = ? WHERE session_key_sha256 = ? AND retired_at IS NULL AND ends_at > ?")
+                .params(now, sha256(checked(demoSession)), now).update();
+    }
+
+    private static String checked(String demoSession) {
+        if (demoSession == null || demoSession.length() < 20 || demoSession.length() > 100) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "demoSession is the key the demo session was started with.");
+        }
+        return demoSession;
+    }
+
+    static String sha256(String s) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 }

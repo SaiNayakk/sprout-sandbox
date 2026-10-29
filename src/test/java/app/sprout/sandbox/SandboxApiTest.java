@@ -55,7 +55,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * so the tests can see each demo account set up, given to a visitor, living its sessions and retired.
  */
 @Testcontainers
-@SpringBootTest(properties = {"spring.config.name=sandbox", "sprout.sandbox.every=1h"})   // the tests run the rounds
+@SpringBootTest(properties = {"spring.config.name=sandbox", "sprout.sandbox.every=1h",   // the tests run the rounds
+        "sprout.sandbox.warm=3", "sprout.sandbox.most=6", "sprout.sandbox.history=40"})
 @AutoConfigureMockMvc
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class SandboxApiTest {
@@ -199,7 +200,8 @@ class SandboxApiTest {
         long paid = count("POST /partner/v1/payouts");
         SESSION.set("2026-12-01");
         life.round();
-        assertThat(count("POST /partner/v1/payouts")).as("claimed accounts keep living; the new ones aren't ready yet").isEqualTo(paid + 3);
+        assertThat(count("POST /partner/v1/payouts")).as("a visitor's account doesn't live on its own, nor does one with its full history; "
+                + "the new ones aren't ready yet: only the third warm account is paid").isEqualTo(paid + 1);
     }
 
     @Test
@@ -213,6 +215,72 @@ class SandboxApiTest {
         SESSION.set("2027-01-04");
         life.round();
         assertThat(count("POST /partner/v1/payouts")).as("only the warm account that is ready lives on").isEqualTo(paid + 1);
+    }
+
+    ResultActions heartbeat(String key, boolean active) throws Exception {
+        return mvc.perform(post("/v3/demo-sessions/heartbeat").contentType(MediaType.APPLICATION_JSON)
+                .content(JSON.writeValueAsString(Map.of("demoSession", key, "active", active))));
+    }
+
+    String started(String name) throws Exception {
+        return JSON.readTree(start(name).andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT).andReturn().getResponse().getContentAsString())
+                .path("demoSession").asText();
+    }
+
+    boolean retired(String key) {
+        return db.sql("SELECT retired_at IS NOT NULL FROM demo_accounts WHERE session_key_sha256 = encode(sha256(convert_to(?, 'UTF8')), 'hex')")
+                .param(key).query(Boolean.class).single();
+    }
+
+    @Test
+    @Order(6)
+    void aVisitorKeepsTheirAccountWhileTheyAreThereAndNoLonger() throws Exception {
+        for (int i = 0; i < 12; i++) {
+            setup.round();
+        }
+        assertThat(db.sql("SELECT count(*) FROM demo_accounts WHERE retired_at IS NULL").query(Integer.class).single())
+                .as("never more than `most` open").isLessThanOrEqualTo(6);
+
+        // idle: heartbeats keep coming, but nothing is done for fifteen minutes
+        String idle = started("Ravi");
+        assertThat(idle).hasSizeGreaterThanOrEqualTo(40);
+        heartbeat(idle, true).andExpect(status().isNoContent()).andExpect(MATCHES_CONTRACT);
+        clock.advance(Duration.ofMinutes(1));
+        setup.round();
+        assertThat(retired(idle)).as("here and active").isFalse();
+        for (int i = 0; i < 15; i++) {
+            clock.advance(Duration.ofMinutes(1));
+            heartbeat(idle, false).andExpect(status().isNoContent());
+        }
+        setup.round();
+        assertThat(retired(idle)).as("idle for fifteen minutes").isTrue();
+        heartbeat(idle, true).andExpect(status().isNotFound()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.code").value("DEMO_SESSION_ENDED"));
+
+        // gone: the tab was closed and the heartbeats stopped
+        String gone = started("Kiran");
+        clock.advance(Duration.ofMinutes(2).plusSeconds(1));
+        setup.round();
+        assertThat(retired(gone)).as("no heartbeat for two minutes").isTrue();
+
+        // left: the web app said so, as sendBeacon sends it; safe to repeat
+        String left = started("Meera");
+        for (int i = 0; i < 2; i++) {
+            mvc.perform(post("/v3/demo-sessions/leave").contentType(MediaType.TEXT_PLAIN).content("{\"demoSession\":\"" + left + "\"}"))
+                    .andExpect(status().isNoContent()).andExpect(MATCHES_CONTRACT);
+        }
+        setup.round();
+        assertThat(retired(left)).isTrue();
+
+        heartbeat("too-short", true).andExpect(status().isBadRequest()).andExpect(MATCHES_CONTRACT);
+    }
+
+    @Test
+    @Order(7)
+    void whenEveryAccountIsInUseTheVisitorIsToldToWaitTheirTurn() throws Exception {
+        db.sql("UPDATE demo_accounts SET claimed_at = now(), ends_at = now() + interval '1 hour' WHERE claimed_at IS NULL").update();
+        start("Late").andExpect(status().isServiceUnavailable()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.retryAfterSeconds").value(20));
     }
 
     // ── the stand-in for the rest of Sprout ──────────────────────────────────

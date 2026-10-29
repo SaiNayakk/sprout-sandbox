@@ -5,6 +5,7 @@ import app.sprout.sandbox.domain.Upstreams.Unreachable;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,8 +18,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 /**
- * Keeps the pool of demo accounts: retires those whose visitor's time is up, starts new ones so a few are
- * always warming for the next visitors, and sets each new one up the way a real customer sets up, through
+ * Keeps the pool of demo accounts: retires those whose visitor has gone (no heartbeat), gone idle, left or run out
+ * of time, starts new ones so {@code warm} are always waiting for the next visitors (never more than {@code most}
+ * open at once), and sets each new one up the way a real customer sets up, through
  * the same APIs: a sign-in, a bank account with a UPI PIN, a Sprout account (KYC), a first deposit
  * approved in the bank, AutoPay for round-ups, a plan, a pot, readiness, and the demo squad. One step per
  * account per round; every step is safe to repeat, and one that can't be done yet is tried next round.
@@ -64,26 +66,34 @@ public class Setup {
         }
     }
 
-    /** Accounts whose visitor's time is up stop living and can't be signed in to again. */
+    /**
+     * Accounts whose visitor has gone can't be signed in to again: their time is up, they left, their heartbeats
+     * stopped, or they did nothing for {@code idleAfter}. An account given out by an older client, which sends no
+     * heartbeat, is kept until its time is up.
+     */
     void retire() {
-        List<DemoAccount> due = db.sql("SELECT id, number FROM demo_accounts WHERE ends_at <= ? AND retired_at IS NULL")
-                .param(Timestamp.from(clock.instant()))
+        Instant now = clock.instant();
+        List<DemoAccount> due = db.sql("""
+                        SELECT id, number FROM demo_accounts WHERE retired_at IS NULL AND claimed_at IS NOT NULL
+                          AND (ends_at <= ? OR seen_at < ? OR active_at < ?)""")
+                .params(Timestamp.from(now), Timestamp.from(now.minus(up.props.goneAfter())), Timestamp.from(now.minus(up.props.idleAfter())))
                 .query((rs, n) -> new DemoAccount(rs.getObject(1, UUID.class), rs.getLong(2))).list();
         for (DemoAccount a : due) {
             try {
                 accounts.close(a);
                 db.sql("UPDATE demo_accounts SET retired_at = ? WHERE id = ?").params(Timestamp.from(clock.instant()), a.id()).update();
-                log.info("Demo account {} retired: its visitor's time is up", a.number());
+                log.info("Demo account {} retired: its visitor has gone", a.number());
             } catch (Unreachable e) {
                 log.info("Demo account {} couldn't be closed yet ({})", a.number(), e.getMessage());
             }
         }
     }
 
-    /** Starts new accounts until {@code warm} are waiting (set up or still setting up) for visitors. */
+    /** Starts new accounts until {@code warm} are waiting (set up or still setting up), with at most {@code most} open. */
     void warm() {
         int waiting = db.sql("SELECT count(*) FROM demo_accounts WHERE claimed_at IS NULL AND retired_at IS NULL").query(Integer.class).single();
-        for (int i = waiting; i < up.props.warm(); i++) {
+        int open = db.sql("SELECT count(*) FROM demo_accounts WHERE retired_at IS NULL").query(Integer.class).single();
+        for (int i = waiting; i < up.props.warm() && open < up.props.most(); i++, open++) {
             long number = db.sql("SELECT nextval('demo_account_numbers')").query(Long.class).single();
             db.sql("INSERT INTO demo_accounts (id, number, created_at) VALUES (?, ?, ?)")
                     .params(UUID.randomUUID(), number, Timestamp.from(clock.instant())).update();

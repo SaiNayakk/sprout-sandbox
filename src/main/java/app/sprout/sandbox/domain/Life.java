@@ -19,7 +19,8 @@ import org.springframework.stereotype.Component;
  * and while it is theirs: paid monthly, money added when Sprout cash runs low, UPI spends at the demo shops
  * (rounded up into the pot), the pot topped up, a share bought now and then and one sold now and then.
  * The plan buys on its own. Each session is lived once per account; what it does in it is decided by a
- * random draw seeded by the account and the session, so it's varied but repeatable.
+ * draw seeded by the account's age in sessions alone, so every account lives the same history. An account stops
+ * living once it has {@code history} sessions behind it or a visitor has it: from then on the visitor drives.
  */
 @Component
 public class Life {
@@ -47,8 +48,9 @@ public class Life {
         LocalDate session = LocalDate.parse(market.path("sessionDate").asText());
         List<DemoAccount> due = db.sql("""
                         SELECT id, number FROM demo_accounts
-                        WHERE ready AND retired_at IS NULL AND (last_session IS NULL OR last_session < ?) ORDER BY number""")
-                .param(java.sql.Date.valueOf(session))
+                        WHERE ready AND retired_at IS NULL AND claimed_at IS NULL AND sessions_lived < ?
+                          AND (last_session IS NULL OR last_session < ?) ORDER BY number""")
+                .params(up.props.history(), java.sql.Date.valueOf(session))
                 .query((rs, n) -> new DemoAccount(rs.getObject(1, UUID.class), rs.getLong(2))).list();
         for (DemoAccount a : due) {
             try {
@@ -64,8 +66,8 @@ public class Life {
 
     void live(DemoAccount a, LocalDate session) {
         UUID user = accounts.user(a);
-        Random r = new Random((a.id() + session.toString()).hashCode());
         int lived = db.sql("SELECT sessions_lived FROM demo_accounts WHERE id = ?").param(a.id()).query(Integer.class).single();
+        Random r = new Random(lived);   // the same draw for every account at the same age: the same history
         payday(a, session);
         accounts.approvePendingRequests(user);   // anything left waiting from an earlier session
         long cash = Math.round(up.as(user, "GET", up.props.omsUrl() + "/v1/funds", null, null).body().path("cash").asDouble());
