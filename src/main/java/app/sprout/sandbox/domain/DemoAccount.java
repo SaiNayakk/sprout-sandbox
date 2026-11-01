@@ -12,6 +12,10 @@ public record DemoAccount(UUID id, long number) {
 
     /** Monthly pay, in rupees. */
     static final int SALARY = 60000;
+    /** What the account first adds to Sprout, in rupees. */
+    static final int FIRST_DEPOSIT = 100000;
+    /** Shares it already holds when a visitor gets it: a bank and a cheap consumer share, so the portfolio has a history. */
+    static final List<Starter> STARTERS = List.of(new Starter("HARBOR", 10), new Starter("BREWBERRY", 50));
     static final String DATE_OF_BIRTH = "1995-06-15";
     /** The plan: a modestly priced share, bought on the 5th, the day after payday. */
     static final String PLAN_SYMBOL = "KOSHA";
@@ -45,4 +49,6 @@ public record DemoAccount(UUID id, long number) {
     String nickname() {
         return "Saver " + number;
     }
+
+    record Starter(String symbol, int quantity) {}
 }

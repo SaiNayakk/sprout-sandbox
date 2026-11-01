@@ -148,6 +148,13 @@ class SandboxApiTest {
         assertThat(count("POST /v1/squads/join")).isEqualTo(2);
         assertThat(DISPLAY_NAMES.values()).as("nothing about a visitor is assumed before they arrive")
                 .allMatch(n -> n.startsWith("Demo Customer "));
+        assertThat(count("POST /v1/orders")).as("the starting shares wait for the market to open").isZero();
+        assertThat(db.sql("SELECT count(*) FROM demo_accounts WHERE ready").query(Integer.class).single()).isZero();
+        MARKET.set("OPEN");
+        setup.round();
+        assertThat(count("POST /v1/orders")).as("two starting shares each").isEqualTo(6);
+        assertThat(db.sql("SELECT count(*) FROM demo_accounts WHERE ready").query(Integer.class).single()).isEqualTo(3);
+        MARKET.set("CLOSED");
         long calls = CALLS.size();
         setup.round();
         assertThat(CALLS.size()).as("set up once, and the pool is full: nothing more to do").isEqualTo(calls);
@@ -156,14 +163,15 @@ class SandboxApiTest {
     @Test
     @Order(3)
     void eachSessionIsLivedOnceByEachAccount() {
+        long starters = count("POST /v1/orders");
         life.round();
-        assertThat(count("POST /v1/orders")).as("the market is closed").isZero();
+        assertThat(count("POST /v1/orders")).as("the market is closed").isEqualTo(starters);
         MARKET.set("OPEN");
         life.round();
         assertThat(count("POST /partner/v1/payouts")).as("each paid for October").isEqualTo(3);
         long spends = count("POST /v1/payments");
         assertThat(spends).as("each spent at least once (rounded up into the pot)").isGreaterThanOrEqualTo(3);
-        assertThat(count("POST /v1/orders")).as("the first session buys a share").isEqualTo(3);
+        assertThat(count("POST /v1/orders")).as("the first session buys a share").isEqualTo(starters + 3);
         life.round();
         assertThat(count("POST /v1/payments")).as("a session is lived once").isEqualTo(spends);
         SESSION.set("2026-10-06");
@@ -346,6 +354,7 @@ class SandboxApiTest {
                     case "GET /v1/referrals/me" -> reply(ex, 200, Map.of("code", "SPR-" + user.substring(0, 6)));
                     case "GET /v1/market" -> reply(ex, 200, Map.of("state", MARKET.get(), "sessionDate", SESSION.get()));
                     case "GET /v1/funds" -> reply(ex, 200, Map.of("cash", CASH.get() + ".00"));
+                    case "POST /v1/orders" -> reply(ex, 201, Map.of("status", "FILLED", "filledQuantity", body.path("quantity").asInt()));
                     case "GET /v1/holdings" -> reply(ex, 200, Map.of("holdings", List.of(Map.of("symbol", "KOSHA", "quantity", 3, "t1Quantity", 0))));
                     default -> {
                         if (method.equals("POST") && path.startsWith("/v1/requests/")) {
