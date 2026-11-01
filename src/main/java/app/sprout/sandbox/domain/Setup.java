@@ -22,7 +22,8 @@ import org.springframework.stereotype.Component;
  * of time, starts new ones so {@code warm} are always waiting for the next visitors (never more than {@code most}
  * open at once), and sets each new one up the way a real customer sets up, through
  * the same APIs: a sign-in, a bank account with a UPI PIN, a Sprout account (KYC), a first deposit
- * approved in the bank, AutoPay for round-ups, a plan, a pot, readiness, and the demo squad. One step per
+ * approved in the bank, AutoPay for round-ups, a plan, a pot, readiness, the demo squad, and a couple of shares bought
+ * while the market is open. One step per
  * account per round; every step is safe to repeat, and one that can't be done yet is tried next round.
  */
 @Component
@@ -30,7 +31,7 @@ public class Setup {
 
     private static final Logger log = LoggerFactory.getLogger(Setup.class);
 
-    static final String[] STEPS = {"IDENTITY", "BANK", "ACCOUNT", "DEPOSIT", "AUTOPAY", "PLAN", "POT", "READINESS", "SQUAD"};
+    static final String[] STEPS = {"IDENTITY", "BANK", "ACCOUNT", "DEPOSIT", "AUTOPAY", "PLAN", "POT", "READINESS", "SQUAD", "HOLDINGS"};
     static final String SQUAD = "Sprout Demo Savers";
 
     private final JdbcClient db;
@@ -126,7 +127,7 @@ public class Setup {
                 }
                 yield true;
             }
-            case "DEPOSIT" -> accounts.addMoney(a, 25000, "sandbox:demo-" + a.number() + ":first-deposit");
+            case "DEPOSIT" -> accounts.addMoney(a, DemoAccount.FIRST_DEPOSIT, "sandbox:demo-" + a.number() + ":first-deposit");
             case "AUTOPAY" -> {
                 up.as(user, "POST", up.props.paymentsUrl() + "/v1/mandates", Map.of("maxAmount", "1000"), "sandbox:demo-" + a.number() + ":autopay");
                 approvePendingMandates(user);
@@ -149,8 +150,34 @@ public class Setup {
             case "READINESS" -> up.as(user, "PUT", up.props.habitsUrl() + "/v1/readiness", Map.of("emergencyFundMonths", 6, "highInterestDebt", false,
                     "horizonYears", 10), null).ok();
             case "SQUAD" -> squad(a, user);
+            case "HOLDINGS" -> starters(a, user);
             default -> throw new IllegalStateException(step);
         };
+    }
+
+    /**
+     * The shares the account starts with, bought as anyone buys them: market orders, placed only while the market is open.
+     * What it already holds counts, so a repeat never buys twice; a refused order is tried again next session.
+     */
+    private boolean starters(DemoAccount a, UUID user) {
+        JsonNode market = up.send("GET", up.props.marketdataUrl() + "/v1/market", null, Map.of()).body();
+        if (market == null || !"OPEN".equals(market.path("state").asText())) {
+            throw new Unreachable("the market is closed");
+        }
+        Map<String, Long> held = new LinkedHashMap<>();
+        for (JsonNode h : up.as(user, "GET", up.props.omsUrl() + "/v1/holdings", null, null).body().path("holdings")) {
+            held.put(h.path("symbol").asText(), h.path("quantity").asLong());
+        }
+        boolean all = true;
+        for (DemoAccount.Starter s : DemoAccount.STARTERS) {
+            if (held.getOrDefault(s.symbol(), 0L) >= s.quantity()) {
+                continue;
+            }
+            Reply r = up.as(user, "POST", up.props.omsUrl() + "/v1/orders", Map.of("symbol", s.symbol(), "side", "BUY", "quantity", s.quantity(),
+                    "orderType", "MARKET", "product", "CNC"), "sandbox:demo-" + a.number() + ":starter:" + s.symbol() + ":" + market.path("sessionDate").asText());
+            all &= r.ok() && "FILLED".equals(r.body().path("status").asText());
+        }
+        return all;
     }
 
     private void approvePendingMandates(UUID user) {
